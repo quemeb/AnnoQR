@@ -782,6 +782,48 @@ countGeneQuery <- function(gene, filter_fields = NULL) {
   )
 }
 
+.null_to_na <- function(value) {
+  if (is.null(value)) NA else value
+}
+
+.report_rows_to_df <- function(rows, columns, numeric_columns = character()) {
+  columns_data <- lapply(columns, function(column) {
+    values <- vapply(rows, function(row) {
+      as.character(.null_to_na(row[[column]]))
+    }, character(1))
+    if (column %in% numeric_columns) as.integer(values) else values
+  })
+  names(columns_data) <- columns
+  as.data.frame(columns_data, stringsAsFactors = FALSE)
+}
+
+# Status of each submitted variant and gene identifier (NULL when the backend
+# does not send an input report).
+.build_snpway_input_report <- function(response_data) {
+  report <- response_data$input_report
+  if (is.null(report) || !is.list(report)) {
+    return(NULL)
+  }
+
+  variants <- if (is.null(report$variants)) list() else report$variants
+  list(
+    summary = lapply(report$summary, .null_to_na),
+    variants = .report_rows_to_df(
+      variants,
+      c("input", "variant_key", "status", "n_genes"),
+      numeric_columns = "n_genes"
+    ),
+    gene_identifiers = if (is.null(report$gene_identifiers)) {
+      NULL
+    } else {
+      .report_rows_to_df(
+        report$gene_identifiers,
+        c("identifier", "mapped_by_panther", "panther_listed_as", "panther_match")
+      )
+    }
+  )
+}
+
 .get_relevant_columns <- function(annotation_dataset = NULL) {
   base_columns <- c("rsId", "PANTHER_ID", "mappedGenes")
 
@@ -1018,6 +1060,10 @@ countGeneQuery <- function(gene, filter_fields = NULL) {
 #'   - mapping$variant_gene_map: Mapping from SNP ID (rsID or chr:pos) to associated genes.
 #'   - panther$gene_info: PANTHER annotations (families, pathways, GO terms) for each gene.
 #'   - panther$gene_to_panther_map: Mapping from gene symbol to PANTHER protein family ID.
+#'   - input_report$summary: Counts of submitted variants by status and of gene identifiers.
+#'   - input_report$variants: Data frame with one row per submitted variant
+#'     (`input`, `variant_key`, `status` of annotated / no_record / no_gene, `n_genes`).
+#'   - input_report$gene_identifiers: NULL here, since no overrepresentation test is run.
 #'
 #' @export
 snpwayGeneMappingsQuery <- function(vcf_text = NULL,
@@ -1044,7 +1090,10 @@ snpwayGeneMappingsQuery <- function(vcf_text = NULL,
     timeout_seconds = timeout_seconds
   )
 
-  .build_snpway_mapping_response(response_data)
+  c(
+    .build_snpway_mapping_response(response_data),
+    list(input_report = .build_snpway_input_report(response_data))
+  )
 }
 
 
@@ -1078,6 +1127,12 @@ snpwayGeneMappingsQuery <- function(vcf_text = NULL,
 #'   - csv$all_mappings_all_columns: Table of all SNP-gene-PANTHER associations with complete annotations.
 #'   - csv$significant_mappings: Table of significant enrichment results with selected columns.
 #'   - csv$significant_mappings_all_columns: Table of significant enrichment results with complete annotations.
+#'   - input_report$summary: Counts of submitted variants by status and of gene identifiers
+#'     mapped / not mapped / not listed by PANTHER.
+#'   - input_report$variants: Data frame with one row per submitted variant
+#'     (`input`, `variant_key`, `status` of annotated / no_record / no_gene, `n_genes`).
+#'   - input_report$gene_identifiers: Data frame with one row per gene identifier sent to PANTHER
+#'     (`identifier`, `mapped_by_panther` of yes / no / not_listed, `panther_listed_as`, `panther_match`).
 #'
 #' @export
 snpwayOverrepresentationWorkflowQuery <- function(annot_data_set = "GO:0008150",
@@ -1160,7 +1215,8 @@ snpwayOverrepresentationWorkflowQuery <- function(annot_data_set = "GO:0008150",
           panther_ids_to_include = significant_panther_ids,
           annotation_dataset = NULL
         )
-      )
+      ),
+      input_report = .build_snpway_input_report(response_data)
     )
   )
 }
